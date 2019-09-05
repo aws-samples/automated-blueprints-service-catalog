@@ -1,0 +1,236 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+
+  ClusterName:
+    Type: String
+
+  ApplicationName:
+    Type: String
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+
+  LaunchType:
+    Type: String
+    Default: Fargate
+    AllowedValues:
+      - Fargate
+      - EC2
+
+  Subnet1:
+    Type: String
+
+  Subnet2:
+    Type: String
+  
+  VpcId:
+    Type: String
+
+Conditions:
+  Fargate: !Equals [ !Ref LaunchType, "Fargate" ]
+
+  EC2: !Equals [ !Ref LaunchType, "EC2" ]
+
+Resources:
+    
+  FargateService:
+    Type: AWS::ECS::Service
+    Condition: Fargate
+    Properties:
+      ServiceName: !Ref ApplicationName
+      Cluster: !Ref ClusterName
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref InitialTaskDefinition
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref SecurityGroup
+          Subnets: [ !Ref Subnet1, !Ref Subnet2 ]      
+  
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: CentralTaskExecutionRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy        
+ 
+  InitialTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref ApplicationName
+      RequiresCompatibilities:
+        - !If [ Fargate, "FARGATE", "EC2" ]
+      Memory: 512
+      Cpu: 256
+      NetworkMode: !If [ Fargate, "awsvpc", "bridge" ]
+      ExecutionRoleArn: !Ref TaskExecutionRole
+      ContainerDefinitions:
+        - Name: !Ref ApplicationName
+          Image: amazon/amazon-ecs-sample
+          EntryPoint:
+            - /usr/sbin/apache2
+            - -D
+            - FOREGROUND
+          Essential: true
+          Memory: 256
+          MountPoints:
+            - SourceVolume: my-vol
+              ContainerPath: /var/www/my-vol
+          PortMappings:
+            - ContainerPort: 80
+      Volumes:
+        - Name: my-vol  
+ 
+  SecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName}-alb
+      SecurityGroupIngress:
+        - CidrIp: "0.0.0.0/0"
+          IpProtocol: "TCP"
+          FromPort: 80
+          ToPort: 80
+      VpcId: !Ref VpcId
+
+  AmazonCloudWatchEventRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: cwe-pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'codepipeline:StartPipelineExecution'
+                Resource: !Join 
+                  - ''
+                  - - 'arn:aws:codepipeline:'
+                    - !Ref 'AWS::Region'
+                    - ':'
+                    - !Ref 'AWS::AccountId'
+                    - ':'
+                    - !Ref Pipeline
+ 
+  AmazonCloudWatchEventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !Join 
+            - ''
+            - - 'arn:aws:codecommit:'
+              - !Ref 'AWS::Region'
+              - ':'
+              - !Ref 'AWS::AccountId'
+              - ':'
+              - !Ref ApplicationName
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - master
+      Targets:
+        - Arn: !Join 
+            - ''
+            - - 'arn:aws:codepipeline:'
+              - !Ref 'AWS::Region'
+              - ':'
+              - !Ref 'AWS::AccountId'
+              - ':'
+              - !Ref Pipeline
+          RoleArn: !GetAtt 
+            - AmazonCloudWatchEventRole
+            - Arn
+          Id: !Sub ${ApplicationName}-codepipeline-AppPipeline
+ 
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${ApplicationName}-ecs-fargate-pipeline
+      RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/${ApplicationName}-codepipeline-role
+      ArtifactStore:
+        Type: S3
+        Location: !Sub ${ApplicationName}-artifactbucket-${AWS::AccountId}
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: App
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              Configuration:
+                BranchName: master
+                RepositoryName: !Ref ApplicationName
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: AppArtifact
+              RunOrder: 1                           
+        - Name: Build
+          Actions:
+            - Name: AppBuild
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Sub ${ApplicationName}-CodeBuild-Project
+              InputArtifacts:
+                - Name: AppArtifact
+              OutputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1                       
+        - Name: Deploy
+          Actions:
+            - Name: DeployECS
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: ECS
+              Configuration:                
+                ClusterName: example-corp-ecs-cluster
+                ServiceName: !Ref ApplicationName
+                FileName: images.json                              
+              InputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+       
+Outputs:
+  SUBNET1:    
+    Value: !Ref Subnet1
+  SUBNET2:    
+    Value: !Ref Subnet2
+  SECURITYGROUP:    
+    Value: !Ref SecurityGroup

@@ -1,0 +1,182 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+
+  ApplicationName:
+    Type: String
+  
+  ContainerBuild:
+    Type: String
+    Default: 'yes'
+    AllowedValues: 
+      - 'yes'
+      - 'no'
+
+Conditions:
+  ContainerBuildIncluded: !Equals [ !Ref ContainerBuild, "yes" ]
+
+Resources:
+
+  CodeCommitRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:       
+      RepositoryName: !Ref ApplicationName      
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ApplicationName}-cb-role
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ApplicationName} 
+                Effect: Allow
+                Action:
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:PutImage
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - ecr:GetAuthorizationToken
+                  - ecs:RegisterTaskDefinition
+                  - cloudformation:DescribeStacks                            
+              - Resource: 
+                  - !Sub arn:aws:s3:::${ArtifactBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion              
+
+  Repository:
+    Condition: ContainerBuildIncluded
+    Type: AWS::ECR::Repository    
+    Properties:       
+      RepositoryName: !Ref ApplicationName    
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project    
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE                  
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/docker:17.09.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: APPLICATION_NAME
+            Value: !Ref ApplicationName   
+          - Name: ACCOUNT_ID
+            Value: !Ref AWS::AccountId  
+          - Name: REPOSITORY_URI
+            Value: !If [ContainerBuildIncluded, !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ApplicationName}", "null"]         
+      Name: !Sub ${ApplicationName}-CodeBuild-Project
+      ServiceRole: !Ref CodeBuildServiceRole
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: !Sub ${ApplicationName}-codepipeline-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource:
+                  - !Sub arn:aws:s3:::${ArtifactBucket}/*                  
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - cloudformation:Describe*
+                  - ecr:DescribeImages 
+                  - ecs:DescribeServices
+                  - ecs:DescribeTaskDefinition
+                  - ecs:DescribeTasks
+                  - ecs:ListTasks
+                  - ecs:RegisterTaskDefinition
+                  - ecs:UpdateService
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - iam:PassRole
+                  - codepipeline:*
+                  - codedeploy:*  
+                  - iam:CreateRole
+                  - iam:AttachRolePolicy
+                  - cloudformation:Describe*
+                  - cloudFormation:List*              
+                  - cloudformation:CreateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:ValidateTemplate
+                  - codecommit:List*
+                  - codecommit:Get*
+                  - codecommit:GitPull
+                  - codecommit:UploadArchive
+                  - codecommit:CancelUploadArchive         
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket   
+    Properties:
+      BucketName: !Sub ${ApplicationName}-artifactbucket-${AWS::AccountId}
+
+  ArtifactBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:        
+          - Sid: DenyInsecureConnections
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: !Join 
+              - ''
+              - - !GetAtt 
+                  - ArtifactBucket
+                  - Arn
+                - /*
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+      

@@ -1,0 +1,66 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates a Service Catalog Portfolio and a set of products
+Parameters:
+  ApplicationName:
+    Type: String
+  TemplateBucketName:
+    Type: String
+Resources:
+  AppServicesPortfolio:
+    Type: "AWS::ServiceCatalog::Portfolio"
+    Properties:
+      ProviderName: 'Central IT'
+      Description: 'Portfolio for application services in Example corp'
+      DisplayName: 'Application-Services'
+  CoreBuildToolsProduct:
+    Type: "AWS::ServiceCatalog::CloudFormationProduct"
+    Properties:
+      Owner: 'Central IT'      
+      Description: 'Core tools and permissions required to deploy apps on AWS'      
+      Name: 'Core Build Tools'
+      ProvisioningArtifactParameters: 
+        - 
+          Info: { "LoadTemplateFromURL": !Sub "https://s3.amazonaws.com/${TemplateBucketName}/core-build-tools.yml" }          
+          Name: v0.1
+  CoreBuildToolsProductConstraint:
+    Type: "AWS::ServiceCatalog::LaunchRoleConstraint"
+    DependsOn: CoreBuildToolsProductAssoc
+    Properties:
+      Description: 'IAM role to launch service catalog products'      
+      PortfolioId: !Ref AppServicesPortfolio
+      ProductId: !Ref CoreBuildToolsProduct
+      RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/sc-launch-role
+  PortfolioProductAssoc:
+    Type: "AWS::ServiceCatalog::PortfolioPrincipalAssociation"
+    Properties:
+      PrincipalARN: !Sub arn:aws:iam::${AWS::AccountId}:role/${ApplicationName}-product-team-role
+      PortfolioId: !Ref AppServicesPortfolio 
+      PrincipalType: IAM
+  EcsFargateBlueprintProduct:
+    Type: "AWS::ServiceCatalog::CloudFormationProduct"
+    Properties:
+      Owner: 'Central IT'      
+      Description: 'Blueprint and resources required to deploy ECS Fargate apps on AWS'      
+      Name: 'ECS Fargate blueprint'
+      ProvisioningArtifactParameters: 
+        - 
+          Info: { "LoadTemplateFromURL": !Sub "https://s3.amazonaws.com/${TemplateBucketName}/ecs-fargate-deployment-blueprint.yml" }          
+          Name: v0.1        
+  EcsFargateBlueprintProductConstraint:
+    Type: "AWS::ServiceCatalog::LaunchRoleConstraint"
+    DependsOn: EcsFargateBlueprintProductAssoc
+    Properties:
+      Description: 'IAM role to launch service catalog products'      
+      PortfolioId: !Ref AppServicesPortfolio
+      ProductId: !Ref EcsFargateBlueprintProduct
+      RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/sc-launch-role      
+  CoreBuildToolsProductAssoc:
+    Type: "AWS::ServiceCatalog::PortfolioProductAssociation"
+    Properties:
+      PortfolioId: !Ref AppServicesPortfolio
+      ProductId: !Ref CoreBuildToolsProduct      
+  EcsFargateBlueprintProductAssoc:
+    Type: "AWS::ServiceCatalog::PortfolioProductAssociation"
+    Properties:
+      PortfolioId: !Ref AppServicesPortfolio
+      ProductId: !Ref EcsFargateBlueprintProduct          
