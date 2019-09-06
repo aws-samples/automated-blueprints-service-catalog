@@ -56,7 +56,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       Path: /
-      RoleName: CentralTaskExecutionRole
+      RoleName: !Sub ${ApplicationName}-TaskExecutionRole
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
